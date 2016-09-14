@@ -2,184 +2,141 @@
 
 /**
  * @file
- * 
- * Implements the API on tag suggestion/autotagging modules as outlined at
- * http://groups.drupal.org/node/100179
+ * Contains autotag.module..
  */
+
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\EntityFieldManager;
+use Drupal\node\Entity\Node;
+use Drupal\field\FieldConfigInterface;
+use Drupal\taxonomy\Entity\Term;
+use Drupal\taxonomy\Entity\Vocabulary;
+use Drupal\taxonomy\TermInterface;
+use Drupal\taxonomy\VocabularyInterface;
+
 /**
- * Implementation of hook_tag_suggestion_info().
+ * Implements hook_help().
  */
-function autotag_tag_suggestion_info(){
-  return array(
-    'autotag' => array(
-      'label' => t('Taxonomy term searcher'),
-      'description' => t('Automatically associates terms from a taxonomy if the term appears within the text of the node'),
-      'request_callback' => 'autotag_tag_suggestions',
-      'options' => array(
-        'callback' => 'autotag_tag_options',
-        'keys' => array(
-          'autotag_vids',
-          'tag_only_with_tips'
-        )
-      )
-    )
-  );
+function autotag_help($route_name, RouteMatchInterface $route_match) {
+  switch ($route_name) {
+    // Main module help for the autotag module.
+    case 'help.page.autotag':
+      $output = '';
+      $output .= '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('Implements the Tags API to help link entities to terms already present on a site.') . '</p>';
+      return $output;
+
+    default:
+  }
 }
 
 /**
- * Callback as defined above in hook_tag_suggestion_info
+ * Implements hook_form_alter().
  */
-function autotag_tag_suggestions($text, $options){
-  // Simply passed the text.  We now need to get the vids that we're interested
-  // in (specific for this module).
-  $tags = array();
-  foreach($options['autotag_vids'] as $vid){
-    $term_count = db_query("SELECT COUNT(*) FROM {taxonomy_term_data} WHERE vid = ?", array(
-      $vid
-    ))->fetchField();
-    if($term_count > 0 && strlen(trim($text))){
-      $tags = array_merge($tags, autotag_search_text($text, $vid, $options['tag_only_with_tips']));
-    }
-  }
-  return $tags;
-}
+function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  $entityManager = Drupal::service('entity.manager');
+  $source_fields = array();
+  $destination_fields = array();
 
-/**
- * Compare functions
- */
-function autotag_search_text($text, $vid, $tag_only_leaves){
-  $tags_to_return = array();
-  /**
-   * Discovered that the following only seems to work in PHP 5.2, FARP!
-   * Thanks to 
-   * http://stackoverflow.com/questions/790596/split-a-text-into-single-words
-   * $words_including_small = preg_split('/[\p{P}\s\{\}\[\]\(\)]/', strtolower($text), -1, PREG_SPLIT_NO_EMPTY);
-   * 
-   * Note, we split the string only once, so we have to pass the body text
-   * to the search functions
-   */
-  // Lower the text!
-  $text = strtolower($text);
-  $words = array_unique(preg_split('/[\ `!"£$%^&*()_\-+={\[}\]:;@\'~#<,>.?\/|\\\]/', $text, -1, PREG_SPLIT_NO_EMPTY));
-  if(!count($words)){return $tags_to_return;}
-  // We have the words, we need to check
-  // We create a temporary table with all the words in it, and then compare this
-  // temporary table against the taxonomy_term_data table.
-  // First, we create the temporary table
-  $temporary_table_name = db_query_temporary('SELECT ? AS words', array(
-    array_pop($words)
-  ));
-  // Now we insert the rest of the data into the table.  We also add an index
-  // to ensure that searching the data is quick, and update the column to be
-  // a varchar(255).  Note, this can actually fail, but it does not actually
-  // matter.
-  try{
-    db_change_field($temporary_table_name, 'words', 'words', array(
-      'type' => 'varchar',
-      'length' => 255
-    ));
-  }
-  catch(Exception $e){
-    ;
-  }
-  try{
-    db_add_primary_key($temporary_table_name, array(
-      'words'
-    ));
-  }
-  catch(Exception $e){
-    ;
-  }
-  $values = array();
-  $insert = db_insert($temporary_table_name);
-  $insert->fields(array(
-    'words'
-  ));
-  foreach($words as $word){
-    if(strlen($word < 256)){
-      $insert->values(array(
-        'words' => $word
-      ));
-    }
-  }
-  try{
-    $insert->execute();
-  }
-  catch(Exception $e){
-    // FIXME - This currently does not work with 4-byte characters.  I need to
-    // change this code so that it does not use a temporary table.
-    return array();
-  }
-  // Select the direct single word matches.
-  $select = db_select('taxonomy_term_data', 't');
-  $select->condition('vid', $vid);
-  $select->join($temporary_table_name, 'a', 'a.words LIKE t.name');
-  $select->addField('t', 'tid');
-  $select->addField('t', 'name');
-  if($tag_only_leaves){
-    $notin = db_select('taxonomy_term_hierarchy', 'tth')->fields('tth', array(
-      'parent'
-    ));
-    $select->condition('t.tid', $notin, 'NOT IN');
-  }
-  $results = $select->execute();
-  foreach($results as $term){
-    $tags_to_return[] = taxonomy_term_load($term->tid);
-  }
-  // Next we need to get the multiple word terms
-  $select = db_select('taxonomy_term_data', 't');
-  $select->condition('vid', $vid);
-  $select->condition('name', '% %', 'LIKE');
-  $select->addField('t', 'tid');
-  $select->addField('t', 'name');
-  if($tag_only_leaves){
-    $select->condition('t.tid', $notin, 'NOT IN');
-  }
-  $results = $select->execute();
-  foreach($results as $term){
-    if(strpos($text, strtolower($term->name)) !== FALSE){
-      $tags_to_return[] = taxonomy_term_load($term->tid);
-    }
-  }
-  return $tags_to_return;
-}
+  if ($form_id == 'node_type_add_form' || $form_id == 'node_type_edit_form') {
+    $form['autotag'] = array(
+      '#type' => 'details',
+      '#group' => 'additional_settings',
+      '#title' => t('Autotag'),
+      '#weight' => 30,
+      '#optional' => TRUE,
+    );
 
-/**
- * Callback for the options form
- */
-function autotag_tag_options($node_type, $settings){
-  $vocabularies = taxonomy_vocabulary_load_multiple(FALSE);
-  $options = array();
-  foreach($vocabularies as $vid => $vocabulary){
-    $options[$vid] = $vocabulary->name;
-  }
-  return array(
-    'tag_only_with_tips' => array(
-      '#title' => t('Tag with leaves'),
-      '#type' => 'checkbox',
-      '#default_value' => isset($settings['autotag']['tag_only_with_tips']) ? $settings['autotag']['tag_only_with_tips'] : 0,
-      '#description' => 'Check this box if you would only like "leaf" terms to be used for tagging, else ALL terms will be used.'
-    ),
-    'autotag_vids' => array(
-      '#title' => t('Vocabularies'),
+    $type = $form['type']['#default_value'];
+
+    $fields = $entityManager->getFieldDefinitions('node', $type);
+
+    foreach ($fields as $field){
+      if ($field->getType() == 'text_with_summary'){
+        $source_fields[$field->getName()] = $field->getLabel();
+      }
+      if ($field->getType() == 'entity_reference' && $field->getSettings()['target_type'] == 'taxonomy_term'){
+        $destination_fields_fields[$field->getName()] = $field->getLabel();
+      }
+    }
+    if ($type) {
+      $default_target = \Drupal::config('autotag.type.' . $type)->get('target');
+      $default_source = \Drupal::config('autotag.type.' . $type)->get('source');
+      $default_destination = \Drupal::config('autotag.type.' . $type)->get('destination');
+    }
+/*
+    $form['autotag_destination_taxonomy'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Assign body loaded terms into:'),
+      '#default_value' => $default_target,
+      '#access' => TRUE,
+      '#description' => t('Use machine name values of the target vocabulary.'),
+      '#group' => 'autotag',
+    );
+*/
+
+    $form['autotag']['autotag_source_field'] = array(
       '#type' => 'select',
-      '#options' => $options,
-      '#multiple' => TRUE,
-      '#description' => t('Select the vocabularies you would like to search.'),
-      '#default_value' => isset($settings['autotag']['autotag_vids']) ? $settings['autotag']['autotag_vids'] : array()
-    )
-  );
+      '#title' => t('Source fields to get text:'),
+      '#default_value' => $default_source,
+      '#options' => $source_fields,
+      '#access' => TRUE,
+      '#description' => t('Text field.'),
+      '#group' => 'autotag',
+    );
+
+    $form['autotag']['autotag_destination_field'] = array(
+      '#type' => 'select',
+      '#title' => t('Destination fields to get text:'),
+      '#default_value' => $default_destination,
+      '#options' => $destination_fields,
+      '#access' => TRUE,
+      '#description' => t('Text field.'),
+      '#group' => 'autotag',
+    );
+
+    array_unshift($form['actions']['submit']['#submit'], 'autotag_form_submit_handler');
+  }
+
 }
 
 /**
- * Implements hook_update_dependencies()
+ * Implements hook_form_submit().
  */
-function autotag_update_dependencies(){
-  return array(
-    'autotag' => array(
-      7001 => array(
-        'tagtag' => 7001
-      )
-    )
-  );
+function autotag_form_submit_handler($form, FormStateInterface $form_state) {
+  $type = $form_state->getValue('type');
+  $destination = $form_state->getValue('autotag_destination_taxonomy');
+  \Drupal::configFactory()->getEditable('autotag.type.' . $type)
+    ->set('target' , $destination)
+  ->save();
+}
+
+/**
+ * Implements hook_node_presave().
+ */
+function autotag_node_presave(EntityInterface $node)  {
+  $type = $node->bundle();
+  $target = \Drupal::config('autotag.type.' . $type)->get('target');
+  $vocabularies = Vocabulary::loadMultiple();
+  $text_array = $node->get('body')->getValue();
+  foreach ($text_array as $item) {
+    if (isset($item['summary'])){
+      $text .= strtolower($item['summary']);
+    }
+    if (isset($item['value'])){
+      $text .= strtolower($item['value']);
+    }
+  }
+  if (isset ($vocabularies[$target])){
+    $tree = \Drupal::entityManager()->getStorage('taxonomy_term')->loadTree($vocabularies[$target]->id());
+    foreach ($tree as $term){
+      $found = strpos($text, strtolower($term->name));
+      if ($found !== FALSE){
+        echo 'found';
+      }
+    }
+  }
+  
 }

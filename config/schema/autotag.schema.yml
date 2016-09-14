@@ -1,0 +1,13 @@
+autotag.type.*:
+  type: config_entity
+  label: 'Content type'
+  mapping:
+    target:
+      type: string
+      label: 'Machine-readable name of destination taxonomy.'
+    source:
+      type: string
+      label: 'Machine-readable name of source text field.'
+    destination:
+      type: string
+      label: 'Machine-readable name of source text field.'

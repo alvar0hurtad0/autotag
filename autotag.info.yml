@@ -1,0 +1,7 @@
+name: autotag
+type: module
+description: Implements the Tags API to help link entities to terms already present on a site.
+core: 8.x
+package: Tags
+dependencies:
+  - taxonomy
