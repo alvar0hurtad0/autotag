@@ -7,7 +7,7 @@ suggestions of terms related to the content of a node.
 
 REQUIREMENTS
 ------------
-- Tag API
+- Taxonomy
 
 CONFIGURATION
 -------------

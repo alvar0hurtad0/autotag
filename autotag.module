@@ -45,8 +45,6 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
       '#type' => 'details',
       '#group' => 'additional_settings',
       '#title' => t('Autotag'),
-      '#weight' => 30,
-      '#optional' => TRUE,
     );
 
     $type = $form['type']['#default_value'];
@@ -54,28 +52,17 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
     $fields = $entityManager->getFieldDefinitions('node', $type);
 
     foreach ($fields as $field){
-      if ($field->getType() == 'text_with_summary'){
+      if ($field->getType() == 'text_with_summary' || $field->getType() == 'text_long') {
         $source_fields[$field->getName()] = $field->getLabel();
       }
-      if ($field->getType() == 'entity_reference' && $field->getSettings()['target_type'] == 'taxonomy_term'){
-        $destination_fields_fields[$field->getName()] = $field->getLabel();
+      if ($field->getType() == 'entity_reference' && $field->getSettings()['target_type'] == 'taxonomy_term') {
+        $destination_fields[$field->getName()] = $field->getLabel();
       }
     }
     if ($type) {
-      $default_target = \Drupal::config('autotag.type.' . $type)->get('target');
       $default_source = \Drupal::config('autotag.type.' . $type)->get('source');
       $default_destination = \Drupal::config('autotag.type.' . $type)->get('destination');
     }
-/*
-    $form['autotag_destination_taxonomy'] = array(
-      '#type' => 'textfield',
-      '#title' => t('Assign body loaded terms into:'),
-      '#default_value' => $default_target,
-      '#access' => TRUE,
-      '#description' => t('Use machine name values of the target vocabulary.'),
-      '#group' => 'autotag',
-    );
-*/
 
     $form['autotag']['autotag_source_field'] = array(
       '#type' => 'select',
@@ -84,7 +71,6 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
       '#options' => $source_fields,
       '#access' => TRUE,
       '#description' => t('Text field.'),
-      '#group' => 'autotag',
     );
 
     $form['autotag']['autotag_destination_field'] = array(
@@ -94,7 +80,6 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
       '#options' => $destination_fields,
       '#access' => TRUE,
       '#description' => t('Text field.'),
-      '#group' => 'autotag',
     );
 
     array_unshift($form['actions']['submit']['#submit'], 'autotag_form_submit_handler');
@@ -107,20 +92,26 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
  */
 function autotag_form_submit_handler($form, FormStateInterface $form_state) {
   $type = $form_state->getValue('type');
-  $destination = $form_state->getValue('autotag_destination_taxonomy');
+  $source = $form_state->getValue('autotag_source_field');
+  $destination = $form_state->getValue('autotag_destination_field');
   \Drupal::configFactory()->getEditable('autotag.type.' . $type)
-    ->set('target' , $destination)
+    ->set('source' , $source)
   ->save();
+  \Drupal::configFactory()->getEditable('autotag.type.' . $type)
+    ->set('destination' , $destination)
+    ->save();
 }
 
 /**
  * Implements hook_node_presave().
  */
-function autotag_node_presave(EntityInterface $node)  {
+function autotag_node_presave(EntityInterface &$node)  {
   $type = $node->bundle();
-  $target = \Drupal::config('autotag.type.' . $type)->get('target');
-  $vocabularies = Vocabulary::loadMultiple();
-  $text_array = $node->get('body')->getValue();
+  $source = \Drupal::config('autotag.type.' . $type)->get('source');
+  $text = '';
+  $destination = \Drupal::config('autotag.type.' . $type)->get('destination');
+  $vocabularies = $node->getFieldDefinition($destination)->getItemDefinition()->getSettings()['handler_settings']['target_bundles'];
+  $text_array = $node->get($source)->getValue();
   foreach ($text_array as $item) {
     if (isset($item['summary'])){
       $text .= strtolower($item['summary']);
@@ -129,12 +120,12 @@ function autotag_node_presave(EntityInterface $node)  {
       $text .= strtolower($item['value']);
     }
   }
-  if (isset ($vocabularies[$target])){
-    $tree = \Drupal::entityManager()->getStorage('taxonomy_term')->loadTree($vocabularies[$target]->id());
+  foreach ($vocabularies as $vocabulary) {
+    $tree = \Drupal::getContainer()->get('entity.manager')->getStorage('taxonomy_term')->loadTree($vocabulary);
     foreach ($tree as $term){
       $found = strpos($text, strtolower($term->name));
       if ($found !== FALSE){
-        echo 'found';
+        $node->{$destination}[] = ['target_id' => $term->tid];
       }
     }
   }
