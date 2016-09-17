@@ -8,13 +8,6 @@
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Entity\EntityInterface;
-use Drupal\Core\Entity\EntityFieldManager;
-use Drupal\node\Entity\Node;
-use Drupal\field\FieldConfigInterface;
-use Drupal\taxonomy\Entity\Term;
-use Drupal\taxonomy\Entity\Vocabulary;
-use Drupal\taxonomy\TermInterface;
-use Drupal\taxonomy\VocabularyInterface;
 
 /**
  * Implements hook_help().
@@ -51,7 +44,7 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
 
     $fields = $entityManager->getFieldDefinitions('node', $type);
 
-    foreach ($fields as $field){
+    foreach ($fields as $field) {
       if ($field->getType() == 'text_with_summary' || $field->getType() == 'text_long') {
         $source_fields[$field->getName()] = $field->getLabel();
       }
@@ -65,12 +58,11 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
     }
 
     $form['autotag']['autotag_source_field'] = array(
-      '#type' => 'select',
+      '#type' => 'checkboxes',
       '#title' => t('Source fields to get text:'),
       '#default_value' => $default_source,
       '#options' => $source_fields,
       '#access' => TRUE,
-      '#description' => t('Text field.'),
     );
 
     $form['autotag']['autotag_destination_field'] = array(
@@ -79,9 +71,14 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
       '#default_value' => $default_destination,
       '#options' => $destination_fields,
       '#access' => TRUE,
-      '#description' => t('Text field.'),
     );
 
+    $form['autotag']['autotag_rebuild_on_submit'] = array(
+      '#type' => 'checkboxes',
+      '#title' => t('Assign tags on save.'),
+      '#options' => array('rebuild' => 'Rebuild on this form submission'),
+      '#access' => TRUE,
+    );
     array_unshift($form['actions']['submit']['#submit'], 'autotag_form_submit_handler');
   }
 
@@ -95,10 +92,10 @@ function autotag_form_submit_handler($form, FormStateInterface $form_state) {
   $source = $form_state->getValue('autotag_source_field');
   $destination = $form_state->getValue('autotag_destination_field');
   \Drupal::configFactory()->getEditable('autotag.type.' . $type)
-    ->set('source' , $source)
-  ->save();
+    ->set('source', $source)
+    ->save();
   \Drupal::configFactory()->getEditable('autotag.type.' . $type)
-    ->set('destination' , $destination)
+    ->set('destination', $destination)
     ->save();
 }
 
@@ -106,24 +103,28 @@ function autotag_form_submit_handler($form, FormStateInterface $form_state) {
  * Implements hook_node_presave().
  */
 function autotag_node_presave(EntityInterface $node) {
+  $text_array = array();
   $type = $node->bundle();
   $source = \Drupal::config('autotag.type.' . $type)->get('source');
   $text = '';
   $destination = \Drupal::config('autotag.type.' . $type)->get('destination');
   $vocabularies = $node->getFieldDefinition($destination)->getItemDefinition()->getSettings()['handler_settings']['target_bundles'];
-  $text_array = $node->get($source)->getValue();
+  foreach ($source as $field) {
+    $text_array[] = $node->get($field)->getValue();
+  }
+
   foreach ($text_array as $item) {
-    if (isset($item['summary'])){
-      $text .= strtolower($item['summary']);
+    if (isset($item[0]['summary'])) {
+      $text .= strtolower($item[0]['summary']);
     }
-    if (isset($item['value'])){
-      $text .= strtolower($item['value']);
+    if (isset($item[0]['value'])) {
+      $text .= strtolower($item[0]['value']);
     }
   }
   foreach ($vocabularies as $vocabulary) {
     $tree = \Drupal::getContainer()->get('entity.manager')->getStorage('taxonomy_term')->loadTree($vocabulary);
-    $current_terms = explode(', ',$node->get($destination)->getString());
-    foreach ($tree as $term){
+    $current_terms = explode(', ', $node->get($destination)->getString());
+    foreach ($tree as $term) {
       $found = strpos($text, strtolower($term->name));
       if ($found !== FALSE && !in_array($term->tid, $current_terms)) {
         $value = array('target_id' => $term->tid);
@@ -131,5 +132,5 @@ function autotag_node_presave(EntityInterface $node) {
       }
     }
   }
-  
+
 }
