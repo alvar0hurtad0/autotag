@@ -1,0 +1,3 @@
+autotag.type.*.*:
+  type: string
+  label: label: 'Machine-readable name of source text field.'
