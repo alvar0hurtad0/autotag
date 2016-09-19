@@ -79,15 +79,16 @@ function autotag_form_alter(&$form, FormStateInterface $form_state, $form_id) {
       '#options' => array('rebuild' => 'Rebuild on this form submission'),
       '#access' => TRUE,
     );
-    array_unshift($form['actions']['submit']['#submit'], 'autotag_form_submit_handler');
+    array_unshift($form['actions']['submit']['#submit'], 'autotag_form_submit_save_config');
+    $form['actions']['submit']['#submit'][] = 'autotag_form_submit_autotag_nodes';
   }
 
 }
 
 /**
- * Implements hook_form_submit().
+ * Save config on form submit.
  */
-function autotag_form_submit_handler($form, FormStateInterface $form_state) {
+function autotag_form_submit_save_config($form, FormStateInterface $form_state) {
   $type = $form_state->getValue('type');
   $source = $form_state->getValue('autotag_source_field');
   $destination = $form_state->getValue('autotag_destination_field');
@@ -97,12 +98,39 @@ function autotag_form_submit_handler($form, FormStateInterface $form_state) {
   \Drupal::configFactory()->getEditable('autotag.type.' . $type)
     ->set('destination', $destination)
     ->save();
+
+}
+
+/**
+ * Autotag all nodes of certain content type on configuration submit.
+ *
+ * @param array $form
+ *   The sended form.
+ * @param \Drupal\Core\Form\FormStateInterface $form_state
+ *   The sended form_state.
+ */
+function autotag_form_submit_autotag_nodes($form, FormStateInterface $form_state) {
+  $type = $form_state->getValue('type');
+  if ($form_state->getValue('autotag_rebuild_on_submit')['rebuild'] === 'rebuild') {
+    $batch = autotag_get_batch_tag_all_nodes($type);
+    batch_set($batch);
+  }
 }
 
 /**
  * Implements hook_node_presave().
  */
 function autotag_node_presave(EntityInterface $node) {
+  autotag_tag_node($node);
+}
+
+/**
+ * Asign tags to node depending to bundle configuration.
+ *
+ * @param EntityInterface $node
+ *   The node to autotag.
+ */
+function autotag_tag_node(EntityInterface &$node) {
   $text_array = array();
   $type = $node->bundle();
   $source = \Drupal::config('autotag.type.' . $type)->get('source');
@@ -110,7 +138,9 @@ function autotag_node_presave(EntityInterface $node) {
   $destination = \Drupal::config('autotag.type.' . $type)->get('destination');
   $vocabularies = $node->getFieldDefinition($destination)->getItemDefinition()->getSettings()['handler_settings']['target_bundles'];
   foreach ($source as $field) {
-    $text_array[] = $node->get($field)->getValue();
+    if ($field) {
+      $text_array[] = $node->get($field)->getValue();
+    }
   }
 
   foreach ($text_array as $item) {
@@ -132,5 +162,48 @@ function autotag_node_presave(EntityInterface $node) {
       }
     }
   }
+}
 
+/**
+ * Return the batch to autotag all nodes of certaing bundle.
+ *
+ * @param string $bundle
+ *   The bundle to retag.
+ *
+ * @return array
+ *   The batch to execute.
+ */
+function autotag_get_batch_tag_all_nodes($bundle) {
+  $nids = \Drupal::entityQuery('node')
+    ->condition('type', $bundle)
+    ->execute();
+
+  $batch = array(
+    'title' => t('Autotagging all nodes of type %type', array('%type' => $bundle)),
+    'operations' => array(),
+  );
+  foreach ($nids as $nid) {
+    $batch['operations'][] = array('autotag_load_and_retag_node', array($nid));
+  }
+
+  return $batch;
+}
+
+/**
+ * Loads a node and autotags it.
+ *
+ * @param int $nid
+ *   The id of the node to load.
+ * @param array $context
+ *   Batch API parameter.
+ */
+function autotag_load_and_retag_node($nid, &$context) {
+  $node = \Drupal::entityTypeManager()
+    ->getStorage('node')
+    ->load($nid);
+  autotag_tag_node($node);
+  $node->save();
+
+  $context['results'][] = 1;
+  $context['message'] = 'Node tagged';
 }
